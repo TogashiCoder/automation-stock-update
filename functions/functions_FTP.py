@@ -123,8 +123,25 @@ def load_fournisseurs_ftp(list_fournisseurs, report_gen=None):
             ftp = FTP(config["host"])
             ftp.login(config["user"], config["password"])
             logger.info(f"-- ✅ --  Bien connecté à l'FTP de {name}")
-            filenames = ftp.nlst()
-            valid_files = [f for f in filenames if f.endswith((".csv", ".xls", ".xlsx", ".txt"))]
+            
+            # Get the specific path for this supplier from config
+            supplier_path = config.get('path', '/')  # Default to root if not specified
+            logger.info(f"[INFO]: Using supplier path: {supplier_path}")
+            
+            try:
+                # Navigate to the supplier-specific path
+                if supplier_path != '/':
+                    ftp.cwd(supplier_path)
+                    logger.info(f"[INFO]: Changed to directory: {supplier_path}")
+                
+                # List files in the specified directory
+                filenames = ftp.nlst()
+                valid_files = [f for f in filenames if f.endswith((".csv", ".xls", ".xlsx", ".txt"))]
+                logger.info(f"[INFO]: Found {len(valid_files)} files in {supplier_path}: {valid_files}")
+                
+            except Exception as e:
+                logger.error(f"[ERROR]: Could not access path {supplier_path} for {name}: {e}")
+                valid_files = []
             if multi_file:
                 local_paths = []
                 for ftp_file in valid_files:
@@ -186,10 +203,27 @@ def load_platforms_ftp(list_platforms, report_gen=None):
             ftp = FTP(config["host"])
             ftp.login(config["user"], config["password"])
             logger.info(f"-- ✅ --  Bien connecté à l'FTP de {name}")
-            filenames = ftp.nlst()
-            # Choose platform file with priority: canonical (not platform-prefixed and not -latest), then prefixed, then -latest, else any
+            
+            # Get the specific path for this platform from config
+            platform_path = config.get('path', '/')  # Default to root if not specified
+            logger.info(f"[INFO]: Using platform path: {platform_path}")
+            
             supported_exts = (".csv", ".xls", ".xlsx", ".txt")
-            candidates = [f for f in filenames if f.lower().endswith(supported_exts)]
+            
+            try:
+                # Navigate to the platform-specific path
+                if platform_path != '/':
+                    ftp.cwd(platform_path)
+                    logger.info(f"[INFO]: Changed to directory: {platform_path}")
+                
+                # List files in the specified directory
+                filenames = ftp.nlst()
+                candidates = [f for f in filenames if f.lower().endswith(supported_exts)]
+                logger.info(f"[INFO]: Found {len(candidates)} files in {platform_path}: {candidates}")
+                
+            except Exception as e:
+                logger.error(f"[ERROR]: Could not access path {platform_path} for {name}: {e}")
+                candidates = []
             canonical = [f for f in candidates if (not f.lower().startswith(f"{name.lower()}-")) and ("-latest" not in f.lower())]
             prefixed = [f for f in candidates if f.lower().startswith(f"{name.lower()}-") and ("-latest" not in f.lower())]
             latests = [f for f in candidates if f.lower().startswith(f"{name.lower()}-latest")]
@@ -203,8 +237,12 @@ def load_platforms_ftp(list_platforms, report_gen=None):
             elif candidates:
                 ftp_file = candidates[0]
             if ftp_file:
-                extension = os.path.splitext(ftp_file)[1]
-                local_path = os.path.join(DOSSIER_PLATFORMS, f"{name}-{extension}")
+                # Extract just the filename for local storage
+                filename_only = os.path.basename(ftp_file)
+                extension = os.path.splitext(filename_only)[1]
+                local_path = os.path.join(DOSSIER_PLATFORMS, f"{name}{extension}")
+                
+                # File is already in the correct directory (we navigated there above)
                 success = download_file_from_ftp(ftp, ftp_file, local_path)
                 if success:
                     downloaded_files_P[name] = local_path

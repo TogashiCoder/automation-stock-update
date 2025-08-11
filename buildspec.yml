@@ -3,7 +3,7 @@ env:
   variables:
     PYTHONUNBUFFERED: "1"
     # Toggle upload and email behavior via CodeBuild environment variables
-    DRY_RUN_UPLOAD: "true" # set to "false" when platform FTP networking is ready
+    DRY_RUN_UPLOAD: "false" # set to "true" for testing, "false" for production
     NO_EMAIL: "false" # set to "true" to skip email sending
     # Scope runners (comma-separated, leave empty for all as per YAML)
     SUPPLIERS: ""
@@ -11,6 +11,9 @@ env:
     # Optional S3 backup activation (creates config/aws_backup.yaml at runtime if provided)
     S3_BACKUP_BUCKET: ""
     S3_BACKUP_PREFIX: "backups/platforms"
+    # Deployment metadata
+    TRIGGER_SOURCE: "EventBridge"
+    BUILD_TIMEOUT_MINUTES: "55"
 
 phases:
   install:
@@ -22,7 +25,10 @@ phases:
 
   pre_build:
     commands:
-      - python -c "import sys; print(sys.version)"
+      - echo "🚀 Starting Stock Update Automation Build"
+      - echo "Trigger Source: $TRIGGER_SOURCE"
+      - echo "Build Time: $(date -u)"
+      - python -c "import sys; print(f'Python Version: {sys.version}')"
       - mkdir -p logs UPDATED_FILES UPDATED_FILES/fichiers_platforms Verifier backup fichiers_fournisseurs fichiers_platforms
       - |
         # If bucket is provided and config does not exist, generate minimal aws_backup.yaml
@@ -154,14 +160,33 @@ PY
   build:
     commands:
       - |
+        echo "📋 Build Configuration:"
+        echo "  DRY_RUN_UPLOAD: $DRY_RUN_UPLOAD"
+        echo "  NO_EMAIL: $NO_EMAIL"
+        echo "  SUPPLIERS: ${SUPPLIERS:-'(all)'}"
+        echo "  PLATFORMS: ${PLATFORMS:-'(all)'}"
+        echo "  S3_BACKUP_BUCKET: ${S3_BACKUP_BUCKET:-'(none)'}"
+        echo ""
+        
         EXTRA_ARGS=""
         if [ -n "$SUPPLIERS" ]; then EXTRA_ARGS="$EXTRA_ARGS --suppliers $SUPPLIERS"; fi
         if [ -n "$PLATFORMS" ]; then EXTRA_ARGS="$EXTRA_ARGS --platforms $PLATFORMS"; fi
         if [ "$NO_EMAIL" = "1" ] || [ "$NO_EMAIL" = "true" ]; then EXTRA_ARGS="$EXTRA_ARGS --no-email"; fi
         if [ "$DRY_RUN_UPLOAD" = "1" ] || [ "$DRY_RUN_UPLOAD" = "true" ]; then EXTRA_ARGS="$EXTRA_ARGS --dry-run-upload"; fi
-        echo "Running: python -u run_daily.py $EXTRA_ARGS"
+        
+        echo "🏃 Running: python -u run_daily.py $EXTRA_ARGS"
+        echo "----------------------------------------"
         set -x
-        python -u run_daily.py $EXTRA_ARGS
+        timeout ${BUILD_TIMEOUT_MINUTES:-55}m python -u run_daily.py $EXTRA_ARGS
+      - |
+        BUILD_EXIT_CODE=$?
+        echo "----------------------------------------"
+        if [ $BUILD_EXIT_CODE -eq 0 ]; then
+          echo "✅ Build completed successfully"
+        else
+          echo "❌ Build failed with exit code: $BUILD_EXIT_CODE"
+        fi
+        exit $BUILD_EXIT_CODE
 
 artifacts:
   files:

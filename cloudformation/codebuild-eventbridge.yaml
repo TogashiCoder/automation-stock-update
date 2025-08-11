@@ -1,0 +1,449 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CodeBuild + EventBridge automation for stock update pipeline"
+
+Parameters:
+  GitHubRepoUrl:
+    Type: String
+    Description: "GitHub repository URL (https://github.com/username/repo-name)"
+    Default: "https://github.com/your-username/automation-stock-update"
+
+  GitHubBranch:
+    Type: String
+    Description: "Git branch to use"
+    Default: "main"
+
+  MorningScheduleExpression:
+    Type: String
+    Description: "Morning schedule expression (cron format) - 7 AM France time"
+    Default: "cron(0 6 * * MON-SAT *)" # 6 AM UTC = 7 AM France time (winter), Monday-Saturday
+
+  AfternoonScheduleExpression:
+    Type: String
+    Description: "Afternoon schedule expression (cron format) - 5 PM France time"
+    Default: "cron(0 16 * * MON-SAT *)" # 4 PM UTC = 5 PM France time (winter), Monday-Saturday
+
+  S3BackupBucket:
+    Type: String
+    Description: "S3 bucket for backups (optional)"
+    Default: ""
+
+  NotificationEmail:
+    Type: String
+    Description: "Email address for notifications"
+    AllowedPattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
+
+  ProjectName:
+    Type: String
+    Description: "Project name prefix"
+    Default: "automation-stock-update"
+
+Resources:
+  # S3 Bucket for artifacts and backups
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-artifacts-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: DeleteIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+
+  # IAM Role for CodeBuild
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-codebuild-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+      Policies:
+        - PolicyName: CodeBuildExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ProjectName}*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "${ArtifactsBucket}/*"
+                  - !GetAtt ArtifactsBucket.Arn
+              - !If
+                - HasS3BackupBucket
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                    - s3:PutObject
+                    - s3:DeleteObject
+                    - s3:ListBucket
+                  Resource:
+                    - !Sub "arn:aws:s3:::${S3BackupBucket}/*"
+                    - !Sub "arn:aws:s3:::${S3BackupBucket}"
+                - !Ref AWS::NoValue
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref StockUpdateSecrets
+
+  # Secrets Manager for sensitive configuration
+  StockUpdateSecrets:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/config"
+      Description: "Sensitive configuration for stock update automation"
+      SecretString: !Sub |
+        {
+          "SMTP_USER": "your-smtp-email@gmail.com",
+          "SMTP_PASSWORD": "your-app-password",
+          "SMTP_RECIPIENTS": "${NotificationEmail}",
+          "EMAIL_ENABLED": "true",
+          "FTP_PASS_ABAKUS": "supplier1-password",
+          "FTP_USER_ABAKUS": "supplier1-user",
+          "FTP_HOST_ABAKUS": "ftp.supplier1.com",
+          "FTP_PASS_AIRSTAL": "supplier2-password",
+          "FTP_USER_AIRSTAL": "supplier2-user",
+          "FTP_HOST_AIRSTAL": "ftp.supplier2.com"
+        }
+
+  # CodeBuild Project
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}-build"
+      Description: "Automated stock update pipeline"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: S3
+        Location: !Sub "${ArtifactsBucket}/artifacts"
+        Name: !Sub "${ProjectName}-artifacts"
+        PackagingType: ZIP
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: PYTHONUNBUFFERED
+            Value: "1"
+          - Name: DRY_RUN_UPLOAD
+            Value: "false" # Set to true for testing
+          - Name: NO_EMAIL
+            Value: "false"
+          - Name: SUPPLIERS
+            Value: "" # Empty = all suppliers
+          - Name: PLATFORMS
+            Value: "" # Empty = all platforms
+          - Name: S3_BACKUP_BUCKET
+            Value: !If [HasS3BackupBucket, !Ref S3BackupBucket, ""]
+          - Name: S3_BACKUP_PREFIX
+            Value: "backups/platforms"
+          - Name: SECRETS_ARN
+            Value: !Ref StockUpdateSecrets
+      Source:
+        Type: GITHUB
+        Location: !Ref GitHubRepoUrl
+        GitCloneDepth: 1
+        BuildSpec: |
+          version: 0.2
+          env:
+            secrets-manager:
+              SMTP_USER: ${SECRETS_ARN}:SMTP_USER
+              SMTP_PASSWORD: ${SECRETS_ARN}:SMTP_PASSWORD
+              SMTP_RECIPIENTS: ${SECRETS_ARN}:SMTP_RECIPIENTS
+              EMAIL_ENABLED: ${SECRETS_ARN}:EMAIL_ENABLED
+              # Add all your FTP credentials here
+              FTP_PASS_ABAKUS: ${SECRETS_ARN}:FTP_PASS_ABAKUS
+              FTP_USER_ABAKUS: ${SECRETS_ARN}:FTP_USER_ABAKUS
+              FTP_HOST_ABAKUS: ${SECRETS_ARN}:FTP_HOST_ABAKUS
+              FTP_PASS_AIRSTAL: ${SECRETS_ARN}:FTP_PASS_AIRSTAL
+              FTP_USER_AIRSTAL: ${SECRETS_ARN}:FTP_USER_AIRSTAL
+              FTP_HOST_AIRSTAL: ${SECRETS_ARN}:FTP_HOST_AIRSTAL
+          phases:
+            install:
+              runtime-versions:
+                python: 3.11
+              commands:
+                - pip install --upgrade pip
+                - pip install -r requirements.txt
+            pre_build:
+              commands:
+                - python -c "import sys; print(sys.version)"
+                - mkdir -p logs UPDATED_FILES UPDATED_FILES/fichiers_platforms Verifier backup fichiers_fournisseurs fichiers_platforms
+                - |
+                  # Create config files from environment variables
+                  if [ ! -f config/aws_backup.yaml ] && [ -n "$S3_BACKUP_BUCKET" ]; then
+                    echo "enabled: true" > config/aws_backup.yaml
+                    echo "bucket: ${S3_BACKUP_BUCKET}" >> config/aws_backup.yaml
+                    echo "prefix: ${S3_BACKUP_PREFIX:-backups/platforms}" >> config/aws_backup.yaml
+                    echo "region: ${AWS_REGION:-${AWS_DEFAULT_REGION:-}}" >> config/aws_backup.yaml
+                  fi
+                - |
+                  # Create notification settings from secrets
+                  python - <<'PY'
+                  import os, yaml
+                  from pathlib import Path
+                  
+                  notif_settings = {
+                      'enabled': os.getenv('EMAIL_ENABLED', 'true').lower() == 'true',
+                      'smtp_user': os.getenv('SMTP_USER', ''),
+                      'smtp_password': os.getenv('SMTP_PASSWORD', ''),
+                      'recipients': [r.strip() for r in (os.getenv('SMTP_RECIPIENTS', '')).split(',') if r.strip()]
+                  }
+                  
+                  with open('config/notification_settings.yaml', 'w') as f:
+                      yaml.safe_dump(notif_settings, f, allow_unicode=True)
+                  
+                  print("Created notification_settings.yaml")
+                  PY
+                - |
+                  # Create FTP connection configs from secrets
+                  python - <<'PY'
+                  import os, yaml, re
+                  from pathlib import Path
+                  
+                  def normalize_name(name):
+                      return re.sub(r'[^A-Za-z0-9]+', '_', name.strip()).upper()
+                  
+                  # Scan environment for FTP credentials
+                  fournisseurs = {}
+                  plateformes = {}
+                  
+                  for key, value in os.environ.items():
+                      if key.startswith('FTP_') and value:
+                          parts = key.split('_')
+                          if len(parts) >= 3:
+                              credential_type = parts[1]  # PASS, USER, HOST
+                              entity_name = '_'.join(parts[2:])
+                              
+                              # Determine if it's a supplier or platform based on naming
+                              # Adjust this logic based on your naming conventions
+                              target_dict = fournisseurs  # Default to suppliers
+                              
+                              if entity_name not in target_dict:
+                                  target_dict[entity_name] = {}
+                              
+                              if credential_type == 'PASS':
+                                  target_dict[entity_name]['password'] = value
+                              elif credential_type == 'USER':
+                                  target_dict[entity_name]['username'] = value
+                              elif credential_type == 'HOST':
+                                  target_dict[entity_name]['host'] = value
+                  
+                  # Save configs
+                  if fournisseurs:
+                      with open('config/fournisseurs_connexions.yaml', 'w') as f:
+                          yaml.safe_dump(fournisseurs, f, allow_unicode=True)
+                      print(f"Created fournisseurs_connexions.yaml with {len(fournisseurs)} suppliers")
+                  
+                  if plateformes:
+                      with open('config/plateformes_connexions.yaml', 'w') as f:
+                          yaml.safe_dump(plateformes, f, allow_unicode=True)
+                      print(f"Created plateformes_connexions.yaml with {len(plateformes)} platforms")
+                  PY
+            build:
+              commands:
+                - |
+                  EXTRA_ARGS=""
+                  if [ -n "$SUPPLIERS" ]; then EXTRA_ARGS="$EXTRA_ARGS --suppliers $SUPPLIERS"; fi
+                  if [ -n "$PLATFORMS" ]; then EXTRA_ARGS="$EXTRA_ARGS --platforms $PLATFORMS"; fi
+                  if [ "$NO_EMAIL" = "1" ] || [ "$NO_EMAIL" = "true" ]; then EXTRA_ARGS="$EXTRA_ARGS --no-email"; fi
+                  if [ "$DRY_RUN_UPLOAD" = "1" ] || [ "$DRY_RUN_UPLOAD" = "true" ]; then EXTRA_ARGS="$EXTRA_ARGS --dry-run-upload"; fi
+                  echo "Running: python -u run_daily.py $EXTRA_ARGS"
+                  set -x
+                  python -u run_daily.py $EXTRA_ARGS
+          artifacts:
+            files:
+              - logs/**
+              - UPDATED_FILES/**
+              - Verifier/**
+              - backup/**
+              - fichiers_fournisseurs/**
+              - fichiers_platforms/**
+            discard-paths: no
+      TimeoutInMinutes: 60
+
+  # IAM Role for EventBridge
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-eventbridge-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EventBridgeExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                Resource: !GetAtt CodeBuildProject.Arn
+
+  # EventBridge Rule for morning scheduled execution (7 AM France time)
+  MorningScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-schedule-morning"
+      Description: "Morning scheduled execution of stock update pipeline (7 AM France time)"
+      ScheduleExpression: !Ref MorningScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt CodeBuildProject.Arn
+          Id: "CodeBuildTargetMorning"
+          RoleArn: !GetAtt EventBridgeRole.Arn
+          InputTransformer:
+            InputPathsMap:
+              time: "$.time"
+            InputTemplate: |
+              {
+                "environmentVariablesOverride": [
+                  {
+                    "name": "TRIGGER_TIME",
+                    "value": "<time>"
+                  },
+                  {
+                    "name": "TRIGGER_SOURCE",
+                    "value": "EventBridge-Morning"
+                  }
+                ]
+              }
+
+  # EventBridge Rule for afternoon scheduled execution (5 PM France time)
+  AfternoonScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-schedule-afternoon"
+      Description: "Afternoon scheduled execution of stock update pipeline (5 PM France time)"
+      ScheduleExpression: !Ref AfternoonScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt CodeBuildProject.Arn
+          Id: "CodeBuildTargetAfternoon"
+          RoleArn: !GetAtt EventBridgeRole.Arn
+          InputTransformer:
+            InputPathsMap:
+              time: "$.time"
+            InputTemplate: |
+              {
+                "environmentVariablesOverride": [
+                  {
+                    "name": "TRIGGER_TIME",
+                    "value": "<time>"
+                  },
+                  {
+                    "name": "TRIGGER_SOURCE",
+                    "value": "EventBridge-Afternoon"
+                  }
+                ]
+              }
+
+  # CloudWatch Log Group for CodeBuild
+  CodeBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/codebuild/${ProjectName}-build"
+      RetentionInDays: 30
+
+  # SNS Topic for notifications (optional)
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-notifications"
+      DisplayName: "Stock Update Pipeline Notifications"
+
+  # SNS Subscription
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref NotificationTopic
+      Endpoint: !Ref NotificationEmail
+
+  # CloudWatch Alarm for build failures
+  BuildFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-build-failures"
+      AlarmDescription: "Alert when CodeBuild project fails"
+      MetricName: FailedBuilds
+      Namespace: AWS/CodeBuild
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: ProjectName
+          Value: !Ref CodeBuildProject
+      AlarmActions:
+        - !Ref NotificationTopic
+
+Conditions:
+  HasS3BackupBucket: !Not [!Equals [!Ref S3BackupBucket, ""]]
+
+Outputs:
+  CodeBuildProjectName:
+    Description: "Name of the CodeBuild project"
+    Value: !Ref CodeBuildProject
+    Export:
+      Name: !Sub "${AWS::StackName}-CodeBuildProject"
+
+  ArtifactsBucketName:
+    Description: "Name of the S3 artifacts bucket"
+    Value: !Ref ArtifactsBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-ArtifactsBucket"
+
+  SecretsManagerArn:
+    Description: "ARN of the Secrets Manager secret"
+    Value: !Ref StockUpdateSecrets
+    Export:
+      Name: !Sub "${AWS::StackName}-SecretsArn"
+
+  MorningEventBridgeRuleName:
+    Description: "Name of the morning EventBridge rule"
+    Value: !Ref MorningScheduledRule
+    Export:
+      Name: !Sub "${AWS::StackName}-MorningEventBridgeRule"
+
+  AfternoonEventBridgeRuleName:
+    Description: "Name of the afternoon EventBridge rule"
+    Value: !Ref AfternoonScheduledRule
+    Export:
+      Name: !Sub "${AWS::StackName}-AfternoonEventBridgeRule"
+
+  NotificationTopicArn:
+    Description: "ARN of the SNS notification topic"
+    Value: !Ref NotificationTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-NotificationTopic"

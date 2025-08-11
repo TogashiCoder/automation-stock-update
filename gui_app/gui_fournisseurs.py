@@ -147,11 +147,11 @@ class FournisseurAdminFrame(ctk.CTkFrame):
     def open_fournisseur_modal(self, title, name_init=None, info=None):
         modal = ctk.CTkToplevel(self)
         modal.title(title)
-        modal.geometry("500x370")
+        modal.geometry("500x420")
         modal.grab_set()
         modal.focus()
         modal.resizable(False, False)
-        fields = ["Nom", "Type", "Hôte", "Port", "Utilisateur", "Mot de passe", "Notes"]
+        fields = ["Nom", "Type", "Hôte", "Port", "Utilisateur", "Mot de passe", "Chemin FTP", "Notes"]
         entries = {}
         for i, field in enumerate(fields):
             ctk.CTkLabel(modal, text=field+":", anchor="w").grid(row=i, column=0, sticky="w", padx=12, pady=7)
@@ -164,6 +164,9 @@ class FournisseurAdminFrame(ctk.CTkFrame):
             elif field == "Port":
                 entry = ctk.CTkEntry(modal)
                 entry.insert(0, str(info.get('port')) if info and info.get('port') else "21")
+            elif field == "Chemin FTP":
+                entry = ctk.CTkEntry(modal)
+                entry.insert(0, info.get('path') if info and info.get('path') else "/")
             elif field == "Nom":
                 entry = ctk.CTkEntry(modal)
                 entry.insert(0, name_init if name_init else "")
@@ -183,6 +186,7 @@ class FournisseurAdminFrame(ctk.CTkFrame):
             port = entries["Port"].get().strip()
             username = entries["Utilisateur"].get().strip()
             password = entries["Mot de passe"].get().strip()
+            path = entries["Chemin FTP"].get().strip()
             notes = entries["Notes"].get().strip()
             if not name:
                 self.status_bar.configure(text="Le nom est requis.", text_color="#d6470e")
@@ -198,12 +202,17 @@ class FournisseurAdminFrame(ctk.CTkFrame):
             except ValueError:
                 self.status_bar.configure(text="Le port doit être un nombre.", text_color="#d6470e")
                 return
+            # Default path to root if empty
+            if not path:
+                path = "/"
+            
             info_dict = {
                 'type': type_,
                 'host': host,
                 'port': port,
                 'username': username,
                 'password': password,
+                'path': path,
                 'notes': notes
             }
             if not name_init and name in self.connexions:

@@ -102,6 +102,14 @@ STORM:
     target: quantite_stock
   multi_file: true
   no_header: false
+Storm:
+  columns:
+  - source: '1'
+    target: nom_reference
+  - source: '2'
+    target: quantite_stock
+  multi_file: true
+  no_header: true
 TIELEHABERDER:
   columns:
   - source: artikelnr
