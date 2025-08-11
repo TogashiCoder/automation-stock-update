@@ -41,8 +41,7 @@ def update_plateforme(df_platform, df_fournisseurs, name_platform, name_fourniss
         # Ajouter le suffixe _fournisseur après merge sur ID_PRODUCT
         # df_merged = df_platform.merge(df_fournisseurs, on=ID_PRODUCT, how='left', suffixes=('', '_fournisseur'))
         
-        # Sauvegarde des différences de quantités
-        # df_merged.to_csv(f'{VERIFIED_FILES_PATH}/{name_platform}-{name_fournisseur}_valeurs_différentes.csv', index=False)
+        # Removed: Unnecessary backup of differences
          
         df_platform = df_platform.merge(
             df_fournisseurs[[ID_PRODUCT, QUANTITY]],
@@ -78,8 +77,7 @@ def update_plateforme(df_platform, df_fournisseurs, name_platform, name_fourniss
         df_platform[QUANTITY] = df_platform[f'{QUANTITY}_fournisseur'].combine_first(df_platform[QUANTITY])
         df_platform.drop(columns=[f'{QUANTITY}_fournisseur'], inplace=True)
 
-        # Sauvegarde finale des données corrigées
-        # df_platform.to_csv(f'{VERIFIED_FILES_PATH}/{name_platform}-{name_fournisseur}_valeurs_identiques.csv', index=False)
+        # Removed: Unnecessary final backup
 
         return df_platform, stock_changes
     except Exception as e:
@@ -130,11 +128,7 @@ def mettre_a_jour_Stock_old(valide_fichiers_platforms, valide_fichiers_fournisse
                 # Appliquer la mise à jour des quantités dans le fichier cible
                 df_origin_platform[quantite_stock_p] = df_origin_platform[nom_reference_p].map(map_quantites).fillna(df_origin_platform[quantite_stock_p])
 
-            
-                os.makedirs(UPDATED_FILES_PATH, exist_ok=True)
-            
-                # save_file(df_origin_platform, file_name=f'UPDATED_FILES/{path_p}')
-                save_file(file_name=f'{UPDATED_FILES_PATH_RACINE}/{Path(chemin_fichier_p).name}', df=df_origin_platform,  encoding=encoding_p, sep=sep_p)
+                # Removed: Legacy duplicate save - now handled by mettre_a_jour_Stock_v2
                 
                 logger.info(f"-- -- ✅ -- --  Mise à jour effectuée : {name_p}")
             logger.info('---------------------------------------------------------------')
@@ -271,9 +265,10 @@ def cumule_fournisseurs(data_fournisseurs):
             df_merged[infos['qte']] = df_merged[QUANTITY+'_Fourniss_After_Cumule']
             df_final = df_merged.drop(columns=[ID_PRODUCT+'_Fourniss_After_Cumule'])
             infos['reduced_data'] = df_final
-            VERIFIED_FILES_PATH.mkdir(parents=True, exist_ok=True)
-            logger.info('---------- Juste pour Verifier (Cumule) -----------')
-            save_file(f"{Path(VERIFIED_FILES_PATH) / Path(chemin_for_name).name}", infos['reduced_data'],infos['encoding'], infos['sep'])
+            # Optional: Save verification file for debugging (disabled to reduce unnecessary saves)
+            # VERIFIED_FILES_PATH.mkdir(parents=True, exist_ok=True)
+            # logger.info('---------- Juste pour Verifier (Cumule) -----------')
+            # save_file(f"{Path(VERIFIED_FILES_PATH) / Path(chemin_for_name).name}", infos['reduced_data'],infos['encoding'], infos['sep'])
         except Exception as e:
             logger.error(f"[DEBUG] Error during merge in cumule_fournisseurs for {fournisseur}: {e}")
             logger.error(f"[DEBUG] Problematic df: {df.head()} | df_cumule: {df_cumule.head()}")
@@ -360,15 +355,13 @@ def mettre_a_jour_Stock(valide_fichiers_platforms, valide_fichiers_fournisseurs,
                         df_p[quantite_stock_p] = df_p[nom_reference_p].map(map_quantites).fillna(df_p[quantite_stock_p])
                     platform_dir = UPDATED_FILES_PATH / name_p
                     platform_dir.mkdir(parents=True, exist_ok=True)
-                    timestamp = time.strftime('%Y%m%d-%H%M%S')
                     # Detect original extension
                     platform_ext = Path(chemin_fichier_p).suffix.lower()
-                    # Build output file paths with same extension
+                    # Build output file path with same extension
                     latest_file = platform_dir / f"{name_p}-latest{platform_ext}"
-                    archive_file = platform_dir / f"{name_p}-{timestamp}{platform_ext}"
                     force_excel = platform_ext in {'.xls', '.xlsx'}
+                    # Save only the latest file (removed duplicate archive save)
                     save_file(str(latest_file), df_p, encoding=encoding_p, sep=sep_p, force_excel=force_excel)
-                    save_file(str(archive_file), df_p, encoding=encoding_p, sep=sep_p, force_excel=force_excel)
                     logger.info(f"-- -- ✅ -- --  Mise à jour effectuée et fichiers sauvegardés pour : {name_p}")
                     if report_gen:
                         report_gen.add_platform_processed(name_p)

@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox
 from config.temporary_data_list import current_dataFiles
 from config.config_path_variables import *
 from config.logging_config import LOG_FILEPATH
-from functions.functions_FTP import upload_updated_files_to_marketplace
+from functions.functions_FTP import upload_updated_files_to_marketplace, load_platforms_local, cleanup_temporary_directories, backup_all_original_platform_files
 from functions.functions_report import ReportGenerator
 from utils import load_fournisseurs_config, load_plateformes_config, get_valid_fournisseurs, get_valid_platforms
 
@@ -285,13 +285,25 @@ class MajFTPFrame(ctk.CTkFrame):
             # --------------------- Few Fournisseurs / Platforms ----------------------
 
             
+            # ---------------------- FIRST: Backup ALL Original Platform Files ----------------------
+            
+            logger.info('[BACKUP] Creating backup of ALL original platform files...')
+            backup_result = backup_all_original_platform_files("GUI_START")
+            if backup_result:
+                logger.info(f'[BACKUP] ✅ Pre-run backup completed: {backup_result}')
+                report_gen.add_file_result("Pre-run backup", True, f"Completed: {backup_result}")
+            else:
+                logger.warning('[BACKUP] ⚠️ Pre-run backup failed, but continuing...')
+                report_gen.add_warning("Pre-run backup failed")
+
             # ---------------------- Load data From FTP to Local ----------------------
 
             fichiers_fournisseurs =  load_fournisseurs_ftp(list_fournisseurs, report_gen=report_gen)
                                                 #  dict('FOURNISSEUR_A': chemin fichierA , 
                                                 #       'FOURNISSEUR_B': chemin fichierB,... )
 
-            fichiers_platforms = load_platforms_ftp(list_platforms, report_gen=report_gen)
+            # NEW: Use local platform files instead of FTP download
+            fichiers_platforms = load_platforms_local(list_platforms, report_gen=report_gen)
             
             # ----------------------- Loding Local Data ----------------------
             # fichiers_fournisseurs, fichiers_platforms = current_dataFiles()
@@ -308,7 +320,14 @@ class MajFTPFrame(ctk.CTkFrame):
 
                 logger.info('-- -- ✅ -- --  Mise à jour effectuée -- -- ✅ -- -- ')
                 upload_updated_files_to_marketplace(dry_run=False)
-                messagebox.showinfo("Succès", "✅ La mise à jour a été effectuée avec succès.\nFiles have been uploaded to marketplaces FTP.")
+                
+                # Clean up temporary directories after successful completion
+                logger.info('🧹 Cleaning up temporary directories...')
+                cleanup_success = cleanup_temporary_directories()
+                if cleanup_success:
+                    logger.info('✅ Cleanup completed successfully')
+                
+                messagebox.showinfo("Succès", "✅ La mise à jour a été effectuée avec succès.\nFiles have been uploaded to marketplaces FTP.\n🧹 Temporary directories cleaned.")
                  
                 # Supprimer ancien bouton s'il existe
                 if hasattr(self, 'open_update_btn') and self.open_update_btn.winfo_exists():

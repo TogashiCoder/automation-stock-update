@@ -8,7 +8,7 @@ from dotenv import dotenv_values
 from functions.functions_update import *
 from tkinter import filedialog, messagebox
 from config.temporary_data_list import current_dataFiles
-from functions.functions_FTP import upload_updated_files_to_marketplace
+from functions.functions_FTP import upload_updated_files_to_marketplace, load_platforms_local, cleanup_temporary_directories
 from utils import get_valid_fournisseurs, get_valid_platforms
 
 
@@ -258,7 +258,8 @@ class MajFTPFrame(ctk.CTkFrame):
                                                 #  dict('FOURNISSEUR_A': chemin fichierA , 
                                                 #       'FOURNISSEUR_B': chemin fichierB,... )
 
-            fichiers_platforms = load_platforms_ftp(list_platforms)
+            # NEW: Use local platform files instead of FTP download
+            fichiers_platforms = load_platforms_local(list_platforms)
 
             """
 

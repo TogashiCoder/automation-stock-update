@@ -16,7 +16,7 @@ downloaded_files_F =  load_fournisseurs_ftp(list_fournisseurs)
                                     #  dict('FOURNISSEUR_A': chemin fichierA , 
                                     #       'FOURNISSEUR_B': chemin fichierB,... )
 
-downloaded_files_P = load_platforms_ftp(list_platforms)
+downloaded_files_P = load_platforms_local(list_platforms)
 
 
 fournisseurs_files_valides = check_ready_files(title_files='Fournisseurs', downloaded_files=downloaded_files_F)

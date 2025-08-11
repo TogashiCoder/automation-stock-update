@@ -190,6 +190,19 @@ def load_fournisseurs_ftp(list_fournisseurs, report_gen=None):
 
 
 def load_platforms_ftp(list_platforms, report_gen=None):
+    """
+    DEPRECATED: This function is commented out for the new workflow.
+    Platform FTP servers are now upload-only. Use load_platforms_local() instead.
+    
+    This function is kept for manual population of original platform files later.
+    """
+    logger.warning("⚠️ DEPRECATED: Platform FTP download is disabled. Platform files should be loaded locally.")
+    logger.info("💡 Use load_platforms_local() instead for the new workflow.")
+    logger.info("📝 To manually populate original files, temporarily enable this function.")
+    return {}
+    
+    # COMMENTED OUT - Original FTP download logic below
+    """
     # Clean old downloaded platform files (>5h)
     try:
         os.makedirs(DOSSIER_PLATFORMS, exist_ok=True)
@@ -262,6 +275,7 @@ def load_platforms_ftp(list_platforms, report_gen=None):
                 report_gen.add_file_result(f"FTP {name}", success=False, error_msg=str(e))
                 report_gen.add_error(f"Erreur FTP plateforme {name}: {e}")
     return downloaded_files_P
+    """
 
 
 # ------------------------------------------------------------------------------
@@ -286,6 +300,312 @@ def find_latest_file_for_platform(platform_dir, platform_name):
     if candidates:
         return max(candidates, key=lambda f: f.stat().st_mtime)
     return None
+
+
+def load_platforms_local(list_platforms, report_gen=None):
+    """
+    NEW: Load platform files from local original_platform_files folder
+    instead of downloading from FTP servers.
+    This is the new workflow where platform FTP is upload-only.
+    """
+    logger.info("🔄 Loading platform files from local storage (new workflow)")
+    
+    # Ensure the original platform files directory exists
+    try:
+        ORIGINAL_PLATFORM_FILES_PATH.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[INFO]: Original platform files directory: {ORIGINAL_PLATFORM_FILES_PATH}")
+    except Exception as e:
+        logger.error(f"[ERROR]: Could not create original platform files directory: {e}")
+        return {}
+    
+    # Load platform configurations to validate against available platforms
+    try:
+        plateformes_config = load_plateformes_config()
+    except Exception as e:
+        logger.error(f"[ERROR]: Could not load platform configurations: {e}")
+        return {}
+    
+    loaded_files_P = {}
+    supported_exts = (".csv", ".xls", ".xlsx", ".txt")
+    
+    for platform_name in list_platforms:
+        if platform_name not in plateformes_config:
+            logger.warning(f"[WARNING]: Platform {platform_name} not found in configuration")
+            if report_gen:
+                report_gen.add_file_result(f"Platform {platform_name}", success=False, error_msg="Platform not in configuration")
+            continue
+        
+        try:
+            # Look for original file in platform-specific subfolder
+            platform_subfolder = ORIGINAL_PLATFORM_FILES_PATH / platform_name
+            platform_files = []
+            
+            # Check if the platform subfolder exists
+            if not platform_subfolder.exists():
+                logger.warning(f"[WARNING]: Platform subfolder not found: {platform_subfolder}")
+                logger.info(f"[INFO]: Expected subfolder: original_platform_files/{platform_name}/")
+                if report_gen:
+                    report_gen.add_file_result(f"Subfolder for {platform_name}", success=False, error_msg="Platform subfolder not found")
+                continue
+            
+            # Look for files in the platform subfolder
+            for ext in supported_exts:
+                # Check for any files with supported extensions in the platform subfolder
+                pattern_files = list(platform_subfolder.glob(f"*{ext}"))
+                platform_files.extend(pattern_files)
+            
+            if not platform_files:
+                logger.warning(f"[WARNING]: No original file found in platform subfolder: {platform_subfolder}")
+                logger.info(f"[INFO]: Expected files in: original_platform_files/{platform_name}/ (any .csv, .xlsx, .xls, .txt file)")
+                if report_gen:
+                    report_gen.add_file_result(f"Original file for {platform_name}", success=False, error_msg="No original file found in platform subfolder")
+                continue
+            
+            # Use the first found file (you can modify this logic if needed)
+            original_file = platform_files[0]
+            logger.info(f"[INFO]: Found original file for {platform_name}: {original_file.name} in subfolder {platform_name}")
+            
+            # Copy to legacy location for compatibility with existing processing logic
+            legacy_path = DOSSIER_PLATFORMS / f"{platform_name}{original_file.suffix}"
+            
+            # Ensure legacy directory exists
+            DOSSIER_PLATFORMS.mkdir(parents=True, exist_ok=True)
+            
+            # Copy original file to legacy location
+            import shutil
+            shutil.copy2(original_file, legacy_path)
+            
+            loaded_files_P[platform_name] = str(legacy_path)
+            logger.info(f"[INFO]: ✅ Loaded original file for {platform_name}: {original_file} -> {legacy_path}")
+            
+            if report_gen:
+                report_gen.add_platform_processed(platform_name)
+                report_gen.add_file_result(str(original_file), success=True)
+                
+        except Exception as e:
+            logger.error(f"[ERROR]: Failed to load original file for platform {platform_name}: {e}")
+            if report_gen:
+                report_gen.add_file_result(f"Original file for {platform_name}", success=False, error_msg=str(e))
+    
+    logger.info(f"[INFO]: Loaded {len(loaded_files_P)} platform files from local storage")
+    return loaded_files_P
+
+
+def backup_all_original_platform_files(trigger_platform_name):
+    """
+    Backup ALL original platform files (entire directory structure):
+    - Triggered when ANY platform upload succeeds
+    - If S3 available: Upload ALL original files to S3 (no local backup)
+    - If S3 not available: Create local backup of ALL platform files in organized structure
+    - Keep script clean and organized
+    """
+    try:
+        from datetime import datetime
+        from utils import load_yaml_config
+        import shutil
+        import os
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # Get all platform files to backup
+        platform_files_to_backup = []
+        supported_exts = (".csv", ".xls", ".xlsx", ".txt")
+        
+        for platform_folder in ORIGINAL_PLATFORM_FILES_PATH.iterdir():
+            if platform_folder.is_dir() and platform_folder.name != '__pycache__':
+                for file_path in platform_folder.iterdir():
+                    if file_path.is_file() and file_path.suffix.lower() in supported_exts:
+                        platform_files_to_backup.append({
+                            'platform': platform_folder.name,
+                            'file_path': file_path,
+                            'file_name': file_path.name
+                        })
+        
+        logger.info(f"[INFO]: 📦 Backing up {len(platform_files_to_backup)} original platform files (triggered by {trigger_platform_name})")
+        
+        # Try S3 backup first (preferred)
+        s3_success = False
+        try:
+            import boto3
+            aws_config = load_yaml_config(CONFIG / "aws_backup.yaml") or {}
+            
+            if aws_config.get("enabled", False):
+                # Configure S3 client with credentials from config
+                s3_kwargs = {
+                    'region_name': aws_config.get("region", "eu-north-1")
+                }
+                if aws_config.get("access_key_id"):
+                    s3_kwargs['aws_access_key_id'] = aws_config["access_key_id"]
+                if aws_config.get("secret_access_key"):
+                    s3_kwargs['aws_secret_access_key'] = aws_config["secret_access_key"]
+                if aws_config.get("session_token"):
+                    s3_kwargs['aws_session_token'] = aws_config["session_token"]
+                if aws_config.get("endpoint_url"):
+                    s3_kwargs['endpoint_url'] = aws_config["endpoint_url"]
+                
+                s3_client = boto3.client('s3', **s3_kwargs)
+                bucket = aws_config.get("bucket")
+                
+                if bucket:
+                    original_prefix = aws_config.get("prefix", "backups/platforms").replace("platforms", "original_platform_files")
+                    s3_uploaded = 0
+                    
+                    # Upload all platform files to S3
+                    for file_info in platform_files_to_backup:
+                        try:
+                            # Read file data
+                            with open(file_info['file_path'], 'rb') as f:
+                                file_data = f.read()
+                            
+                            # S3 key: backups/original_platform_files/YYYYMMDD_HHMMSS/Platform/filename.ext
+                            s3_key = f"{original_prefix}/{timestamp}/{file_info['platform']}/{file_info['file_name']}"
+                            
+                            # Upload to S3
+                            s3_client.put_object(
+                                Bucket=bucket,
+                                Key=s3_key,
+                                Body=file_data
+                            )
+                            s3_uploaded += 1
+                            
+                        except Exception as file_error:
+                            logger.warning(f"[WARNING]: Failed to upload {file_info['platform']}/{file_info['file_name']} to S3: {file_error}")
+                    
+                    logger.info(f"[INFO]: ☁️ S3 backup completed: {s3_uploaded}/{len(platform_files_to_backup)} files uploaded to s3://{bucket}/{original_prefix}/{timestamp}/")
+                    logger.info(f"[INFO]: 🧹 S3 available - skipping local backup (keeping script clean)")
+                    s3_success = True
+                    return f"s3://{bucket}/{original_prefix}/{timestamp}/"
+                    
+        except Exception as s3_error:
+            logger.warning(f"[WARNING]: S3 backup failed: {s3_error}")
+        
+        # Local backup only if S3 failed or not available
+        if not s3_success:
+            logger.info(f"[INFO]: 💾 S3 not available - creating local backup of all original platform files")
+            
+            # Create timestamped backup directory
+            backup_session_dir = BACKUP_ORIGINAL_FILES_PATH / f"backup_{timestamp}"
+            backup_session_dir.mkdir(parents=True, exist_ok=True)
+            
+            local_backed_up = 0
+            
+            # Copy all platform files to local backup with organized structure
+            for file_info in platform_files_to_backup:
+                try:
+                    # Create platform subfolder in backup session
+                    platform_backup_dir = backup_session_dir / file_info['platform']
+                    platform_backup_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Copy file to backup location
+                    backup_file_path = platform_backup_dir / file_info['file_name']
+                    shutil.copy2(file_info['file_path'], backup_file_path)
+                    local_backed_up += 1
+                    
+                except Exception as file_error:
+                    logger.warning(f"[WARNING]: Failed to backup {file_info['platform']}/{file_info['file_name']} locally: {file_error}")
+            
+            logger.info(f"[INFO]: 💾 Local backup completed: {local_backed_up}/{len(platform_files_to_backup)} files backed up to {backup_session_dir}")
+            return backup_session_dir
+        
+    except Exception as e:
+        logger.error(f"[ERROR]: Failed to backup all original platform files: {e}")
+        return None
+
+
+def cleanup_temporary_directories():
+    """
+    Clean up temporary directories after successful completion:
+    - Clear fichiers_fournisseurs/ (downloaded supplier files)
+    - Clear fichiers_platforms/ (temporary platform files for processing)
+    Keep script clean and organized
+    """
+    try:
+        import shutil
+        
+        directories_to_clean = [
+            ("fichiers_fournisseurs", DOSSIER_FOURNISSEURS),
+            ("fichiers_platforms", DOSSIER_PLATFORMS)
+        ]
+        
+        cleaned_count = 0
+        total_files_removed = 0
+        
+        for dir_name, dir_path in directories_to_clean:
+            try:
+                if dir_path.exists():
+                    # Count files before deletion
+                    files_in_dir = list(dir_path.glob("*"))
+                    file_count = len([f for f in files_in_dir if f.is_file()])
+                    
+                    if file_count > 0:
+                        # Remove all contents
+                        for item in files_in_dir:
+                            if item.is_file():
+                                item.unlink()
+                                total_files_removed += 1
+                            elif item.is_dir():
+                                shutil.rmtree(item)
+                        
+                        logger.info(f"[INFO]: 🧹 Cleaned {dir_name}/: removed {file_count} files")
+                        cleaned_count += 1
+                    else:
+                        logger.info(f"[INFO]: 🧹 {dir_name}/ already clean (0 files)")
+                else:
+                    logger.info(f"[INFO]: 🧹 {dir_name}/ does not exist")
+                    
+            except Exception as dir_error:
+                logger.warning(f"[WARNING]: Failed to clean {dir_name}/: {dir_error}")
+        
+        logger.info(f"[INFO]: ✅ Cleanup completed: {cleaned_count}/2 directories processed, {total_files_removed} total files removed")
+        logger.info(f"[INFO]: 🧹 Temporary directories cleaned - script ready for next run")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"[ERROR]: Failed to cleanup temporary directories: {e}")
+        return False
+
+
+def update_original_platform_file(platform_name, updated_file_path):
+    """
+    Replace the original platform file with the updated version after successful upload.
+    NOTE: Backup is now done at the beginning of the script run, not here.
+    """
+    try:
+        # Find the current original file in platform subfolder
+        supported_exts = (".csv", ".xls", ".xlsx", ".txt")
+        platform_subfolder = ORIGINAL_PLATFORM_FILES_PATH / platform_name
+        original_files = []
+        
+        # Check if the platform subfolder exists
+        if not platform_subfolder.exists():
+            logger.warning(f"[WARNING]: Platform subfolder not found for update: {platform_subfolder}")
+            return False
+        
+        # Look for files in the platform subfolder
+        for ext in supported_exts:
+            pattern_files = list(platform_subfolder.glob(f"*{ext}"))
+            original_files.extend(pattern_files)
+        
+        if not original_files:
+            logger.warning(f"[WARNING]: No original file found in {platform_subfolder} to update")
+            return False
+        
+        # Use the first found original file
+        original_file = original_files[0]
+        
+        # Replace original file with updated version (backup already done at script start)
+        import shutil
+        shutil.copy2(updated_file_path, original_file)
+        
+        logger.info(f"[INFO]: ✅ Updated original file: {updated_file_path} -> {original_file}")
+        logger.info(f"[INFO]: 🔄 Original file updated for {platform_name} after successful upload")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"[ERROR]: Failed to update original file for {platform_name}: {e}")
+        return False
 
 
 def upload_updated_files_to_marketplace(dry_run=False):
@@ -460,10 +780,21 @@ def upload_updated_files_to_marketplace(dry_run=False):
                     except Exception as e:
                         logger.warning(f"[WARNING]: Cleanup listing failed for {platform_name}: {e}")
                     success = True
+                    
+                    # NEW: Update original platform file after successful upload
+                    if success and not dry_run:
+                        logger.info(f"[INFO]: 🔄 Upload successful, updating original file for {platform_name}")
+                        update_success = update_original_platform_file(platform_name, str(file_path))
+                        if update_success:
+                            logger.info(f"[INFO]: ✅ Original file updated successfully for {platform_name}")
+                        else:
+                            logger.warning(f"[WARNING]: Original file update failed for {platform_name}, but upload was successful")
+                    
                     break
             except Exception as e:
                 logger.error(f"[ERROR]: Failed to upload file {file_path.name} to FTP for {platform_name} (attempt {attempt}): {e}")
                 time.sleep(2)  # Wait before retry
         if not success and not dry_run:
             logger.error(f"[ERROR]: Failed to upload file {file_path.name} to FTP for {platform_name} after 3 attempts.")
+            logger.info(f"[INFO]: ❌ Upload failed, keeping original file unchanged for {platform_name}")
 

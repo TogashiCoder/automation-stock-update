@@ -8,8 +8,10 @@ from config.config_path_variables import *  # ensures paths and .env are loaded
 from functions.functions_report import ReportGenerator
 from functions.functions_FTP import (
     load_fournisseurs_ftp,
-    load_platforms_ftp,
+    load_platforms_local,
     upload_updated_files_to_marketplace,
+    cleanup_temporary_directories,
+    backup_all_original_platform_files,
 )
 from functions.functions_check_ready_files import check_ready_files
 from functions.functions_update import mettre_a_jour_Stock
@@ -96,11 +98,24 @@ def main() -> int:
 
     try:
         logger.info("==== Start headless update run ====")
-        # 1) Download latest inputs via FTP
-        fichiers_fournisseurs = load_fournisseurs_ftp(list_fournisseurs, report_gen=report_gen)
-        fichiers_platforms = load_platforms_ftp(list_platforms, report_gen=report_gen)
+        
+        # 1) FIRST: Backup ALL original platform files to S3 before any processing
+        logger.info("[INFO]: 📦 Creating backup of ALL original platform files...")
+        backup_result = backup_all_original_platform_files("SCRIPT_START")
+        if backup_result:
+            logger.info(f"[INFO]: ✅ Pre-run backup completed: {backup_result}")
+            # Note: Using add_file_result for backup status
+            report_gen.add_file_result(f"Pre-run backup", True, f"Completed: {backup_result}")
+        else:
+            logger.warning("[WARNING]: Pre-run backup failed, but continuing with script...")
+            report_gen.add_warning("Pre-run backup failed")
 
-        # 2) Validate readiness
+        # 2) Download latest inputs via FTP (suppliers) and load local platform files
+        fichiers_fournisseurs = load_fournisseurs_ftp(list_fournisseurs, report_gen=report_gen)
+        # NEW: Load platform files from local storage instead of FTP download
+        fichiers_platforms = load_platforms_local(list_platforms, report_gen=report_gen)
+
+        # 3) Validate readiness
         fournisseurs_files_valides = check_ready_files(
             title_files="Fournisseurs", downloaded_files=fichiers_fournisseurs, report_gen=report_gen
         )
@@ -108,16 +123,24 @@ def main() -> int:
             title_files="Plateformes", downloaded_files=fichiers_platforms, report_gen=report_gen
         )
 
-        # 3) Update stock and write outputs
+        # 4) Update stock and write outputs
         is_store_updated = mettre_a_jour_Stock(
             platforms_files_valides, fournisseurs_files_valides, report_gen=report_gen
         )
 
-        # 4) Upload updated files to platform FTP (unless dry run)
+        # 5) Upload updated files to platform FTP (unless dry run)
         if is_store_updated:
             upload_updated_files_to_marketplace(dry_run=args.dry_run_upload)
+            
+            # 6) Clean up temporary directories after successful completion
+            logger.info("[INFO]: 🧹 Cleaning up temporary directories...")
+            cleanup_success = cleanup_temporary_directories()
+            if cleanup_success:
+                logger.info("[INFO]: ✅ Cleanup completed successfully")
+            else:
+                logger.warning("[WARNING]: Cleanup had some issues, but continuing...")
         else:
-            logger.error("[ERROR]: Store update failed. Skipping upload.")
+            logger.error("[ERROR]: Store update failed. Skipping upload and cleanup.")
 
         return_code = 0 if is_store_updated else 1
         return return_code
