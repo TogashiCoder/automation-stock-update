@@ -1,0 +1,13 @@
+sections:
+  errors: true
+  files_failed: true
+  files_successful: true
+  platforms_processed: true
+  products_updated: true
+  suppliers_processed: true
+  warnings: true
+
+attach_csv: true
+attach_updated_files: false
+max_attachment_mb: 10
+include_zero_contributions: true

@@ -1,0 +1,174 @@
+version: 0.2
+env:
+  variables:
+    PYTHONUNBUFFERED: "1"
+    # Toggle upload and email behavior via CodeBuild environment variables
+    DRY_RUN_UPLOAD: "true" # set to "false" when platform FTP networking is ready
+    NO_EMAIL: "false" # set to "true" to skip email sending
+    # Scope runners (comma-separated, leave empty for all as per YAML)
+    SUPPLIERS: ""
+    PLATFORMS: ""
+    # Optional S3 backup activation (creates config/aws_backup.yaml at runtime if provided)
+    S3_BACKUP_BUCKET: ""
+    S3_BACKUP_PREFIX: "backups/platforms"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - pip install --upgrade pip
+      - pip install -r requirements.txt
+
+  pre_build:
+    commands:
+      - python -c "import sys; print(sys.version)"
+      - mkdir -p logs UPDATED_FILES UPDATED_FILES/fichiers_platforms Verifier backup fichiers_fournisseurs fichiers_platforms
+      - |
+        # If bucket is provided and config does not exist, generate minimal aws_backup.yaml
+        if [ ! -f config/aws_backup.yaml ] && [ -n "$S3_BACKUP_BUCKET" ]; then
+          echo "enabled: true" > config/aws_backup.yaml
+          echo "bucket: ${S3_BACKUP_BUCKET}" >> config/aws_backup.yaml
+          echo "prefix: ${S3_BACKUP_PREFIX:-backups/platforms}" >> config/aws_backup.yaml
+          echo "region: ${AWS_REGION:-${AWS_DEFAULT_REGION:-}}" >> config/aws_backup.yaml
+        fi
+      - |
+        # Optionally override sensitive YAML values from environment variables
+        python - <<'PY'
+import os, re, yaml, pathlib
+from pathlib import Path
+
+def load_yaml(path):
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        return yaml.safe_load(p.read_text(encoding='utf-8')) or {}
+    except Exception:
+        return None
+
+def dump_yaml(path, data):
+    Path(path).write_text(yaml.safe_dump(data, allow_unicode=True), encoding='utf-8')
+
+def normalize(name: str) -> str:
+    key = re.sub(r'[^A-Za-z0-9]+', '_', name.strip()).upper().strip('_')
+    return key
+
+# Patch fournisseurs passwords if env var FTP_PASS_<NAME> (or user/host if provided)
+f_cfg = load_yaml('config/fournisseurs_connexions.yaml')
+if isinstance(f_cfg, dict):
+    changed = False
+    for name, v in f_cfg.items():
+        if not isinstance(v, dict):
+            continue
+        key = normalize(name)
+        pw = os.getenv(f'FTP_PASS_{key}') or os.getenv(f'FTP_PASSWORD_{key}')
+        user = os.getenv(f'FTP_USER_{key}')
+        host = os.getenv(f'FTP_HOST_{key}')
+        if pw:
+            v['password'] = pw
+            changed = True
+        if user:
+            v['username'] = user
+            changed = True
+        if host:
+            v['host'] = host
+            changed = True
+    if changed:
+        dump_yaml('config/fournisseurs_connexions.yaml', f_cfg)
+
+# Patch plateformes passwords if env var FTP_PASS_<NAME>
+p_cfg = load_yaml('config/plateformes_connexions.yaml')
+if isinstance(p_cfg, dict):
+    changed = False
+    for name, v in p_cfg.items():
+        if not isinstance(v, dict):
+            continue
+        key = normalize(name)
+        pw = os.getenv(f'FTP_PASS_{key}') or os.getenv(f'FTP_PASSWORD_{key}')
+        user = os.getenv(f'FTP_USER_{key}')
+        host = os.getenv(f'FTP_HOST_{key}')
+        if pw:
+            v['password'] = pw
+            changed = True
+        if user:
+            v['username'] = user
+            changed = True
+        if host:
+            v['host'] = host
+            changed = True
+    if changed:
+        dump_yaml('config/plateformes_connexions.yaml', p_cfg)
+
+# Patch notification settings if SMTP env provided
+notif_path = Path('config/notification_settings.yaml')
+notif = load_yaml(notif_path) or {}
+smtp_user = os.getenv('SMTP_USER')
+smtp_password = os.getenv('SMTP_PASSWORD')
+recipients = os.getenv('SMTP_RECIPIENTS')  # comma-separated
+email_enabled = os.getenv('EMAIL_ENABLED')
+changed = False
+if smtp_user:
+    notif.setdefault('smtp_user', smtp_user)
+    notif['smtp_user'] = smtp_user
+    changed = True
+if smtp_password:
+    notif.setdefault('smtp_password', smtp_password)
+    notif['smtp_password'] = smtp_password
+    changed = True
+if recipients:
+    notif['recipients'] = [r.strip() for r in recipients.split(',') if r.strip()]
+    changed = True
+if email_enabled is not None and email_enabled != '':
+    notif['enabled'] = str(email_enabled).lower() in ('1','true','yes','y')
+    changed = True
+if changed:
+    dump_yaml(notif_path, notif)
+
+# Sanitize/override aws_backup.yaml credentials: prefer role; only set if env provided
+awsb_path = Path('config/aws_backup.yaml')
+awsb = load_yaml(awsb_path)
+if isinstance(awsb, dict):
+    changed = False
+    # If env creds supplied, set; else blank out sensitive keys
+    ak = os.getenv('S3_ACCESS_KEY_ID')
+    sk = os.getenv('S3_SECRET_ACCESS_KEY')
+    st = os.getenv('S3_SESSION_TOKEN')
+    if ak and sk:
+        awsb['access_key_id'] = ak
+        awsb['secret_access_key'] = sk
+        changed = True
+        if st is not None:
+            awsb['session_token'] = st
+    else:
+        # Clear static creds to force using CodeBuild role/IAM
+        if awsb.get('access_key_id') or awsb.get('secret_access_key') or awsb.get('session_token'):
+            awsb['access_key_id'] = ""
+            awsb['secret_access_key'] = ""
+            awsb['session_token'] = ""
+            changed = True
+    if changed:
+        dump_yaml(awsb_path, awsb)
+PY
+
+  build:
+    commands:
+      - |
+        EXTRA_ARGS=""
+        if [ -n "$SUPPLIERS" ]; then EXTRA_ARGS="$EXTRA_ARGS --suppliers $SUPPLIERS"; fi
+        if [ -n "$PLATFORMS" ]; then EXTRA_ARGS="$EXTRA_ARGS --platforms $PLATFORMS"; fi
+        if [ "$NO_EMAIL" = "1" ] || [ "$NO_EMAIL" = "true" ]; then EXTRA_ARGS="$EXTRA_ARGS --no-email"; fi
+        if [ "$DRY_RUN_UPLOAD" = "1" ] || [ "$DRY_RUN_UPLOAD" = "true" ]; then EXTRA_ARGS="$EXTRA_ARGS --dry-run-upload"; fi
+        echo "Running: python -u run_daily.py $EXTRA_ARGS"
+        set -x
+        python -u run_daily.py $EXTRA_ARGS
+
+artifacts:
+  files:
+    - logs/**
+    - UPDATED_FILES/**
+    - Verifier/**
+    - backup/**
+    - fichiers_fournisseurs/**
+    - fichiers_platforms/**
+  discard-paths: no
