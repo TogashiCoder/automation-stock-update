@@ -29,7 +29,7 @@ phases:
       - echo "Trigger Source: $TRIGGER_SOURCE"
       - echo "Build Time: $(date -u)"
       - python -c "import sys; print(f'Python Version: {sys.version}')"
-      - mkdir -p logs UPDATED_FILES UPDATED_FILES/fichiers_platforms Verifier backup fichiers_fournisseurs fichiers_platforms
+      - mkdir -p logs UPDATED_FILES UPDATED_FILES/fichiers_platforms Verifier backup fichiers_fournisseurs fichiers_platforms original_platform_files backup_original_files
       - |
         # If bucket is provided and config does not exist, generate minimal aws_backup.yaml
         if [ ! -f config/aws_backup.yaml ] && [ -n "$S3_BACKUP_BUCKET" ]; then
@@ -194,6 +194,8 @@ artifacts:
     - UPDATED_FILES/**
     - Verifier/**
     - backup/**
+    - backup_original_files/**
     - fichiers_fournisseurs/**
     - fichiers_platforms/**
+    - original_platform_files/**
   discard-paths: no

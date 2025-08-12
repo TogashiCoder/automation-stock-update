@@ -666,18 +666,30 @@ def upload_updated_files_to_marketplace(dry_run=False):
         host = creds.get('host')
         user = creds.get('username')
         password = creds.get('password')
+        ftp_path = creds.get('path', '/')  # Get custom FTP path, default to root
         if not all([host, user, password]):
             logger.error(f"[ERROR]: FTP credentials missing for {platform_name}. Skipping upload for {file_path.name}.")
             continue
         logger.info(f"[INFO]: Preparing to upload {file_path.name} for {platform_name} to FTP.")
+        logger.info(f"[INFO]: Using platform FTP path: {ftp_path}")
         if dry_run:
-            logger.info(f"[DRY RUN]: Would upload {file_path} to FTP for {platform_name}.")
+            logger.info(f"[DRY RUN]: Would upload {file_path} to FTP for {platform_name} at path {ftp_path}.")
             continue
         success = False
         for attempt in range(1, 4):  # 3 retries
             try:
                 with FTP(host) as ftp:  # type: ignore
                     ftp.login(user, password)  # type: ignore
+                    
+                    # Navigate to the specified FTP path
+                    if ftp_path and ftp_path != '/':
+                        try:
+                            ftp.cwd(ftp_path)
+                            logger.info(f"[INFO]: Navigated to FTP path: {ftp_path}")
+                        except Exception as path_error:
+                            logger.error(f"[ERROR]: Failed to navigate to FTP path '{ftp_path}' for {platform_name}: {path_error}")
+                            raise path_error
+                    
                     from datetime import datetime
                     timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M')
                     # Prepare local backup directory under project

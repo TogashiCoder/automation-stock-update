@@ -128,7 +128,13 @@ Resources:
           "FTP_HOST_ABAKUS": "ftp.supplier1.com",
           "FTP_PASS_AIRSTAL": "supplier2-password",
           "FTP_USER_AIRSTAL": "supplier2-user",
-          "FTP_HOST_AIRSTAL": "ftp.supplier2.com"
+          "FTP_HOST_AIRSTAL": "ftp.supplier2.com",
+          "FTP_PASS_DEPARTO_FRANCE": "platform-b-password",
+          "FTP_USER_DEPARTO_FRANCE": "platform_b",
+          "FTP_HOST_DEPARTO_FRANCE": "192.168.31.5",
+          "FTP_PASS_DEPARTO_GERMANY": "platform-g-password",
+          "FTP_USER_DEPARTO_GERMANY": "platform_g",
+          "FTP_HOST_DEPARTO_GERMANY": "192.168.31.5"
         }
 
   # CodeBuild Project
@@ -183,6 +189,12 @@ Resources:
               FTP_PASS_AIRSTAL: ${SECRETS_ARN}:FTP_PASS_AIRSTAL
               FTP_USER_AIRSTAL: ${SECRETS_ARN}:FTP_USER_AIRSTAL
               FTP_HOST_AIRSTAL: ${SECRETS_ARN}:FTP_HOST_AIRSTAL
+              FTP_PASS_DEPARTO_FRANCE: ${SECRETS_ARN}:FTP_PASS_DEPARTO_FRANCE
+              FTP_USER_DEPARTO_FRANCE: ${SECRETS_ARN}:FTP_USER_DEPARTO_FRANCE
+              FTP_HOST_DEPARTO_FRANCE: ${SECRETS_ARN}:FTP_HOST_DEPARTO_FRANCE
+              FTP_PASS_DEPARTO_GERMANY: ${SECRETS_ARN}:FTP_PASS_DEPARTO_GERMANY
+              FTP_USER_DEPARTO_GERMANY: ${SECRETS_ARN}:FTP_USER_DEPARTO_GERMANY
+              FTP_HOST_DEPARTO_GERMANY: ${SECRETS_ARN}:FTP_HOST_DEPARTO_GERMANY
           phases:
             install:
               runtime-versions:
@@ -193,7 +205,7 @@ Resources:
             pre_build:
               commands:
                 - python -c "import sys; print(sys.version)"
-                - mkdir -p logs UPDATED_FILES UPDATED_FILES/fichiers_platforms Verifier backup fichiers_fournisseurs fichiers_platforms
+                - mkdir -p logs UPDATED_FILES UPDATED_FILES/fichiers_platforms Verifier backup fichiers_fournisseurs fichiers_platforms original_platform_files backup_original_files
                 - |
                   # Create config files from environment variables
                   if [ ! -f config/aws_backup.yaml ] && [ -n "$S3_BACKUP_BUCKET" ]; then
@@ -282,8 +294,10 @@ Resources:
               - UPDATED_FILES/**
               - Verifier/**
               - backup/**
+              - backup_original_files/**
               - fichiers_fournisseurs/**
               - fichiers_platforms/**
+              - original_platform_files/**
             discard-paths: no
       TimeoutInMinutes: 60
 
