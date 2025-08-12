@@ -667,28 +667,28 @@ def upload_updated_files_to_marketplace(dry_run=False):
         user = creds.get('username')
         password = creds.get('password')
         ftp_path = creds.get('path', '/')  # Get custom FTP path, default to root
+        protocol = creds.get('type', 'FTP').upper()  # Get protocol type
+        port = creds.get('port', 22 if protocol == 'SFTP' else 21)  # Default ports
+        
         if not all([host, user, password]):
-            logger.error(f"[ERROR]: FTP credentials missing for {platform_name}. Skipping upload for {file_path.name}.")
+            logger.error(f"[ERROR]: Credentials missing for {platform_name}. Skipping upload for {file_path.name}.")
             continue
-        logger.info(f"[INFO]: Preparing to upload {file_path.name} for {platform_name} to FTP.")
-        logger.info(f"[INFO]: Using platform FTP path: {ftp_path}")
+        
+        logger.info(f"[INFO]: Preparing to upload {file_path.name} for {platform_name} via {protocol}.")
+        logger.info(f"[INFO]: Using platform path: {ftp_path}")
         if dry_run:
-            logger.info(f"[DRY RUN]: Would upload {file_path} to FTP for {platform_name} at path {ftp_path}.")
+            logger.info(f"[DRY RUN]: Would upload {file_path} to {protocol} for {platform_name} at path {ftp_path}.")
             continue
         success = False
         for attempt in range(1, 4):  # 3 retries
             try:
-                with FTP(host) as ftp:  # type: ignore
-                    ftp.login(user, password)  # type: ignore
-                    
-                    # Navigate to the specified FTP path
-                    if ftp_path and ftp_path != '/':
-                        try:
-                            ftp.cwd(ftp_path)
-                            logger.info(f"[INFO]: Navigated to FTP path: {ftp_path}")
-                        except Exception as path_error:
-                            logger.error(f"[ERROR]: Failed to navigate to FTP path '{ftp_path}' for {platform_name}: {path_error}")
-                            raise path_error
+                if protocol == 'SFTP':
+                    success = upload_via_sftp(platform_name, host, port, user, password, ftp_path, file_path, attempt)
+                else:
+                    success = upload_via_ftp(platform_name, host, port, user, password, ftp_path, file_path, attempt)
+                
+                if success:
+                    break
                     
                     from datetime import datetime
                     timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M')
@@ -809,4 +809,94 @@ def upload_updated_files_to_marketplace(dry_run=False):
         if not success and not dry_run:
             logger.error(f"[ERROR]: Failed to upload file {file_path.name} to FTP for {platform_name} after 3 attempts.")
             logger.info(f"[INFO]: ❌ Upload failed, keeping original file unchanged for {platform_name}")
+
+
+def upload_via_ftp(platform_name, host, port, user, password, ftp_path, file_path, attempt):
+    """Upload file via FTP"""
+    try:
+        with FTP(host) as ftp:
+            ftp.login(user, password)
+            
+            # Navigate to the specified FTP path
+            if ftp_path and ftp_path != '/':
+                try:
+                    ftp.cwd(ftp_path)
+                    logger.info(f"[INFO]: Navigated to FTP path: {ftp_path}")
+                except Exception as path_error:
+                    logger.error(f"[ERROR]: Failed to navigate to FTP path '{ftp_path}' for {platform_name}: {path_error}")
+                    raise path_error
+            
+            # Upload the file with a temp name first, then rename
+            temp_name = f"{file_path.name}.tmp"
+            logger.info(f"[INFO]: Connected to FTP for {platform_name} (attempt {attempt}).")
+            
+            with open(file_path, "rb") as f:
+                ftp.storbinary(f"STOR {temp_name}", f)
+            
+            try:
+                ftp.rename(temp_name, file_path.name)
+            except Exception as e:
+                logger.warning(f"[WARNING]: Could not rename {temp_name} -> {file_path.name}: {e}")
+                logger.info(f"[INFO]: Trying to delete old file and upload with final name...")
+                try:
+                    ftp.delete(file_path.name)
+                except:
+                    pass
+                with open(file_path, "rb") as f:
+                    ftp.storbinary(f"STOR {file_path.name}", f)
+            
+            logger.info(f"[INFO]: ✅ Uploaded {file_path.name} via FTP for {platform_name}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"[ERROR]: FTP upload failed for {platform_name} (attempt {attempt}): {e}")
+        return False
+
+
+def upload_via_sftp(platform_name, host, port, user, password, ftp_path, file_path, attempt):
+    """Upload file via SFTP"""
+    try:
+        import paramiko
+        
+        # Create SSH client
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        
+        # Connect
+        ssh.connect(hostname=host, port=port, username=user, password=password)
+        logger.info(f"[INFO]: SSH connected to {host}:{port} for {platform_name} (attempt {attempt})")
+        
+        # Create SFTP client
+        sftp = ssh.open_sftp()
+        logger.info(f"[INFO]: SFTP session established for {platform_name}")
+        
+        # Navigate to the specified path
+        if ftp_path and ftp_path != '/':
+            try:
+                sftp.chdir(ftp_path)
+                logger.info(f"[INFO]: Navigated to SFTP path: {ftp_path}")
+            except Exception as path_error:
+                logger.error(f"[ERROR]: Failed to navigate to SFTP path '{ftp_path}' for {platform_name}: {path_error}")
+                sftp.close()
+                ssh.close()
+                raise path_error
+        
+        # Upload the file
+        remote_file_path = file_path.name
+        sftp.put(str(file_path), remote_file_path)
+        
+        logger.info(f"[INFO]: ✅ Uploaded {file_path.name} via SFTP for {platform_name}")
+        
+        # Cleanup
+        sftp.close()
+        ssh.close()
+        
+        return True
+        
+    except ImportError:
+        logger.error(f"[ERROR]: paramiko not available for SFTP upload to {platform_name}")
+        return False
+    except Exception as e:
+        logger.error(f"[ERROR]: SFTP upload failed for {platform_name} (attempt {attempt}): {e}")
+        return False
 
