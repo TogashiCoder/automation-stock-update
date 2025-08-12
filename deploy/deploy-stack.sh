@@ -6,8 +6,8 @@ set -e
 # Configuration
 STACK_NAME="automation-stock-update"
 REGION="eu-north-1"  # Change to your preferred region
-GITHUB_REPO="https://github.com/your-username/automation-stock-update"  # Update with your repo
-NOTIFICATION_EMAIL="your-email@example.com"  # Update with your email
+GITHUB_REPO="https://github.com/TogashiCoder/automation-stock-update"
+NOTIFICATION_EMAIL="silverproduction2023@gmail.com"
 
 # Colors for output
 RED='\033[0;31m'
